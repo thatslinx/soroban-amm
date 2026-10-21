@@ -1,0 +1,47 @@
+name: Issue 1157 isolated validation
+on:
+  push:
+    branches: [validation/1157-hygiene]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 3
+      - name: Guard regressions and checkout size
+        run: |
+          mkdir -p /tmp/issue-1157-results
+          bash scripts/check_repo_hygiene.sh tracked
+          bash scripts/check_repo_hygiene.test.sh | tee /tmp/issue-1157-results/guards.log
+          git ls-tree -rl HEAD~2 | awk '$2 == "blob" {n += $4} END {printf "before tracked-file bytes: %.0f\n", n}' | tee /tmp/issue-1157-results/size.log
+          git ls-tree -rl HEAD~1 | awk '$2 == "blob" {n += $4} END {printf "after tracked-file bytes: %.0f\n", n}' | tee -a /tmp/issue-1157-results/size.log
+          bash scripts/check_repo_hygiene.sh clean
+      - name: Setup Rust
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Build WASM prerequisites
+        run: bash scripts/build_workspace.sh 2>&1 | tee /tmp/issue-1157-results/build.log
+      - name: Full workspace tests
+        run: cargo test --workspace 2>&1 | tee /tmp/issue-1157-results/tests.log
+      - name: Full workspace Clippy
+        if: success() || failure()
+        run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/issue-1157-results/clippy.log
+      - name: Format and source checks
+        if: success() || failure()
+        run: |
+          cargo fmt --all -- --check
+          make check-docs check-storage-keys check-deploy-scripts
+      - name: Post-test cleanliness
+        if: always()
+        run: |
+          bash scripts/check_repo_hygiene.sh clean | tee /tmp/issue-1157-results/clean.log
+          find . -path '*/test_snapshots/*.json' -not -path './target/*' | wc -l | tee /tmp/issue-1157-results/local-snapshot-count.log
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: issue-1157-results
+          path: /tmp/issue-1157-results
